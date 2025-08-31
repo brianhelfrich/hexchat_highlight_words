@@ -33,7 +33,7 @@ USE_WORD_BOUNDARIES = False   # True = match whole words only
 ```
 
 ## Example
-With 'example' and 'highlight' are in your highlight list with USE_WORD_BOUNDARIES = False:
+With `example` and `highlight` are in your highlight list (with `USE_WORD_BOUNDARIES = False`):
 
 ```text
 <jack> this is an example of highlighted text
