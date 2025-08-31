@@ -71,6 +71,9 @@ def _cb_common(word):
     if highlighted == message:
         return None, None, hexchat.EAT_NONE
 
+    # FIX: reset formatting at start so beginning text does not inherit nick color
+    highlighted = RESET + highlighted
+
     return nick, highlighted, None
 
 def cb_attrs(word, word_eol, userdata, attributes):
