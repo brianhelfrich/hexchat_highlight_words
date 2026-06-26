@@ -21,7 +21,7 @@ import re
 import hexchat
 
 __module_name__ = "Highlight Words"
-__module_version__ = "0.6"
+__module_version__ = "0.7"
 __module_description__ = "Highlight identified words in red font"
 
 # === Configuration ===
@@ -43,43 +43,91 @@ MESSAGE_INDEX = 1
 _emitting = False
 
 
-def _build_patterns(
+def _build_pattern(
     words: list[str], whole_words: bool = False
-) -> list[re.Pattern[str]]:
-    pats = []
-    for w in words:
-        # \b handles most latin words; adjust for unicode boundaries if needed.
-        body = rf"\b({re.escape(w)})\b" if whole_words else rf"({re.escape(w)})"
-        pats.append(re.compile(body, re.IGNORECASE))
-    return pats
+) -> re.Pattern[str] | None:
+    cleaned = [re.escape(w) for w in words if w]
+    if not cleaned:
+        return None
+    # \b handles most latin words; adjust for unicode boundaries if needed.
+    alt = "|".join(cleaned)
+    body = rf"\b({alt})\b" if whole_words else rf"({alt})"
+    return re.compile(body, re.IGNORECASE)
 
 
-PATTERNS = _build_patterns(HIGHLIGHT_WORDS, USE_WORD_BOUNDARIES)
+PATTERN = _build_pattern(HIGHLIGHT_WORDS, USE_WORD_BOUNDARIES)
+
+
+def _active_color(segment: str, state: str) -> str:
+    """Return the color sequence in effect after `segment`, starting from `state`.
+
+    Tracks just enough mIRC state to restore color after a highlight: the last
+    `\\003fg[,bg]` wins; a bare `\\003` or a `\\017` reset clears it. Color codes
+    are normalized to 2-digit fields so re-emitting them can't merge with any
+    following digit. Bold/italic/underline toggles are left untouched.
+    """
+    i, n = 0, len(segment)
+    while i < n:
+        ch = segment[i]
+        if ch == RESET:
+            state = ""
+            i += 1
+        elif ch == COLOR:
+            i += 1
+            fg = ""
+            while i < n and segment[i].isdigit() and len(fg) < 2:
+                fg += segment[i]
+                i += 1
+            bg = ""
+            if fg and i + 1 < n and segment[i] == "," and segment[i + 1].isdigit():
+                i += 1  # skip the comma
+                while i < n and segment[i].isdigit() and len(bg) < 2:
+                    bg += segment[i]
+                    i += 1
+            # Bare \003 (no digits) toggles color off; otherwise set fg[,bg].
+            state = (
+                COLOR + fg.zfill(2) + ("," + bg.zfill(2) if bg else "") if fg else ""
+            )
+        else:
+            i += 1
+    return state
 
 
 def _highlight_text(text: str) -> str:
-    # Wrap each match in color + reset so the color never bleeds past the word.
-    new_text = text
-    for pat in PATTERNS:
-        new_text = pat.sub(rf"{COLOR}{COLOR_CODE}\1{RESET}", new_text)
-    return new_text
+    """Recolor each matched word, then restore the formatting that preceded it.
+
+    Works inside already-colored messages: the color active before a match is
+    re-applied afterward (or `\\017` reset if none), so the rest of the line keeps
+    its original color instead of being truncated by the highlight.
+    """
+    if PATTERN is None:
+        return text
+
+    out = []
+    state = ""  # color sequence active at the current position
+    last = 0
+    for m in PATTERN.finditer(text):
+        pre = text[last : m.start()]
+        out.append(pre)
+        state = _active_color(pre, state)
+        # 2-digit code so it can't merge with a leading digit of the match.
+        restore = state or RESET
+        out.append(f"{COLOR}{COLOR_CODE.zfill(2)}{m.group(0)}{restore}")
+        last = m.end()
+    out.append(text[last:])
+    return "".join(out)
 
 
 def _relay(event_name: str, word: list[str], time: float = 0.0) -> int:
     global _emitting
 
     # Ignore the echo of our own re-emit, and bail when there's nothing to match.
-    if _emitting or not PATTERNS:
+    if _emitting or PATTERN is None:
         return hexchat.EAT_NONE
 
     try:
         message = word[MESSAGE_INDEX]
     except IndexError:
-        return hexchat.EAT_NONE
-
-    # Leave already-colored messages alone: inserting a reset mid-line would
-    # truncate the existing coloring of the rest of the message.
-    if COLOR in message:
         return hexchat.EAT_NONE
 
     highlighted = _highlight_text(message)
